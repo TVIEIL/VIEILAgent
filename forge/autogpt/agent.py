@@ -64,43 +64,86 @@ class AutoGPTAgent(Agent):
         super().__init__(database, workspace)
 
     async def execute_step(self, task_id: str, step_request: StepRequestBody) -> Step:
-        """
-        The agent protocol, which is the core of the Forge, works by creating a task and then
-        executing steps for that task. This method is called when the agent is asked to execute
-        a step.
+        import requests
+        import json
+        import subprocess
 
-        The task that is created contains an input string, for the bechmarks this is the task
-        the agent has been asked to solve and additional input, which is a dictionary and
-        could contain anything.
+        # 1. Créer l'étape dans la base de données de la Forge
+        step = await self.db.create_step(task_id=task_id, input=step_request, is_last=True)
+        
+        # 2. Récupérer le cahier des charges envoyé par l'utilisateur
+        cahier_des_charges = step_request.input
+        print(f"\n🧠 [VIEILagent] Nouveau cahier des charges reçu : {cahier_des_charges}")
 
-        If you want to get the task use:
+        # 3. Configurer l'appel à ton Ollama local (ex: sur ton Orange Pi ou PC)
+        OLLAMA_URL = "http://localhost:11434/api/generate"  # Mets l'IP de ton Orange Pi si Ollama est dessus
+        MODEL_NAME = "qwen2.5-coder:7b" # Ou deepseek-coder, llama3, etc.
 
-        ```
-        task = await self.db.get_task(task_id)
-        ```
+        prompt = f"""Tu es VIEILagent, un ingénieur système et électronicien expert en C++.
+Génère UNIQUEMENT le code C++ complet, propre et fonctionnel qui répond au cahier des charges suivant.
+Ne mets AUCUNE explication, aucun blabla, juste le code dans un bloc de code.
 
-        The step request body is essentailly the same as the task request and contains an input
-        string, for the bechmarks this is the task the agent has been asked to solve and
-        additional input, which is a dictionary and could contain anything.
+Cahier des charges :
+{cahier_des_charges}
+"""
 
-        You need to implement logic that will take in this step input and output the completed step
-        as a step object. You can do everything in a single step or you can break it down into
-        multiple steps. Returning a request to continue in the step output, the user can then decide
-        if they want the agent to continue or not.
-        """
+        payload = {
+            "model": MODEL_NAME,
+            "prompt": prompt,
+            "stream": False
+        }
 
-        # An example that
-        self.workspace.write(task_id=task_id, path="output.txt", data=b"Washington D.C")
-        step = await self.db.create_step(
-            task_id=task_id, input=step_request, is_last=True
+        # 4. Demander au cerveau local de concevoir l'application
+        try:
+            print(f"🤖 Interrogation de Ollama ({MODEL_NAME})...")
+            response = requests.post(OLLAMA_URL, json=payload, timeout=60)
+            result = response.json()
+            code_genere = result.get("response", "").strip()
+            
+            # Nettoyage rapide des balises markdown ```cpp si le modèle en a mis
+            if "```" in code_genere:
+                code_genere = code_genere.split("```")[1]
+                if code_genere.startswith("cpp"):
+                    code_genere = code_genere[3:]
+            code_genere = code_genere.strip()
+
+        except Exception as e:
+            error_msg = f"❌ Erreur de connexion à Ollama : {e}"
+            print(error_msg)
+            step.output = error_msg
+            return step
+
+        # 5. Écrire le code C++ dans le Workspace de l'agent
+        nom_fichier = "main.cpp"
+        self.workspace.write(task_id=task_id, path=nom_fichier, data=code_genere.encode('utf-8'))
+        print(f"💾 Fichier {nom_fichier} écrit avec succès dans le workspace.")
+
+        # 6. SANDBOX : Phase de test de compilation automatique en tâche de fond !
+        # On récupère le chemin absolu du fichier dans le workspace pour le compiler
+        chemin_complet_cpp = self.workspace.get_path(task_id=task_id, path=nom_fichier)
+        chemin_binaire = chemin_complet_cpp.replace(".cpp", "")
+
+        print("⚙️ Lancement de la compilation de test (g++)...")
+        compilation = subprocess.run(
+            ["g++", "-O3", str(chemin_complet_cpp), "-o", str(chemin_binaire)],
+            capture_output=True, text=True
         )
-        artifact = await self.db.create_artifact(
+
+        if compilation.returncode == 0:
+            status_output = f"✅ Application compilée avec succès ! Le binaire est prêt.\n\nCode généré :\n{code_genere}"
+            print("🚀 Compilation réussie !")
+        else:
+            status_output = f"❌ Erreur de compilation détectée par la Sandbox :\n{compilation.stderr}"
+            print("⚠️ Le code généré comporte une erreur de syntaxe.")
+
+        # Enregistrer l'artéfact généré dans la Forge pour le suivi
+        await self.db.create_artifact(
             task_id=task_id,
             step_id=step.step_id,
-            file_name="output.txt",
+            file_name=nom_fichier,
             relative_path="",
             agent_created=True,
         )
-        step.output = "Washington D.C"
 
+        step.output = status_output
         return step
