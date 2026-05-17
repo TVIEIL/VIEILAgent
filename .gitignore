@@ -2,4 +2,5 @@ agbenchmark
 .vscode
 .pytest_cache
 .benchmarks
-*.pkl
+*.pklforge/agent.db
+forge/workspace/

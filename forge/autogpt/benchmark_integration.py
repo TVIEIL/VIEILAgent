@@ -1,4 +1,10 @@
-from agbenchmark.app import get_artifact, get_skill_tree
+#from agbenchmark.app import get_artifact, get_skill_tree
+def get_artifact(*args, **kwargs):
+    return None
+
+def get_skill_tree(*args, **kwargs):
+    return None
+
 from fastapi import APIRouter
 from fastapi import (
     HTTPException as FastAPIHTTPException,  # Import HTTPException from FastAPI
